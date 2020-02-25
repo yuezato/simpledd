@@ -7,6 +7,42 @@
 #include <fcntl.h>
 #include <sys/types.h>
 #include <ctype.h>
+#include <stdbool.h>
+#include <errno.h>
+#include <sys/mman.h>
+#include <stdint.h>
+
+/*
+ Warning1: 汎用的な関数ではない
+ Warning2: huge_freeで解放すること
+ 引数: size は512の倍数
+ 返り値: 512バイトアラインに揃った確保済みアドレスを返す
+ */
+void* huge_malloc(size_t size, void** orig) {
+  if(size % 512) {
+    printf("[huge_malloc] `size=%lu` should be a multiple of 512\n", size);
+    return NULL;
+  }
+  
+  void* addr = mmap(NULL, size + 512, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_HUGETLB | MAP_ANONYMOUS, 0, 0);
+
+  *orig = addr;
+  if(addr == MAP_FAILED) {
+    perror("[huge_malloc] ERROR (Check /proc/sys/vm/nr_hugepages)");
+    return NULL;
+  }
+
+  unsigned int m = ((uintptr_t)addr % 512);
+  if(m) { // not aligned
+    return addr + (512 - m);
+  } else {
+    return addr;
+  }
+}
+
+void huge_free(void *addr, size_t size) {
+  munmap(addr, size + 512);
+}
 
 // xK -> 1024 * x
 // xM -> 1024 * x
@@ -41,7 +77,9 @@ unsigned long num_as_str_to_real_num(const char *str) {
   return v * coeff;
 }
 
-// sdd --if=... --of=... --bs=... --count=..
+/*
+ * Usage: sdd --if=... --of=... --bs=... --count=.. --hugepage
+ */
 int main(int argc, char *argv[]) {
   struct option longopts[] =
     {
@@ -56,6 +94,9 @@ int main(int argc, char *argv[]) {
      },
      {
       "count", required_argument, NULL, 'c'
+     },
+     {
+      "hugepage", optional_argument, NULL, 'h'
      }
     };
 
@@ -64,8 +105,10 @@ int main(int argc, char *argv[]) {
   char *output_path = NULL;
   unsigned int io_size = 0;
   unsigned int count = 0;
-  while((opt = getopt_long(argc, argv, "i:o:b:c:", longopts, &longindex)) != -1) {
-    printf("%d %s\n", longindex, longopts[longindex].name);
+  bool hugepage = false;
+  void* orig_ptr = NULL;
+  while((opt = getopt_long(argc, argv, "i:o:b:c:h", longopts, &longindex)) != -1) {
+    printf("%c %d %s\n", opt, longindex, longopts[longindex].name);
 
     switch(opt) {
     case 'i':
@@ -79,6 +122,9 @@ int main(int argc, char *argv[]) {
       break;
     case 'c':
       count = num_as_str_to_real_num(optarg);
+      break;
+    case 'h':
+      hugepage = true;
       break;
     }
   }
@@ -117,7 +163,11 @@ int main(int argc, char *argv[]) {
   int fdo = open(output_path, O_WRONLY|O_CREAT|O_DIRECT);
 
   char *buf;
-  posix_memalign((void**)&buf, 512, io_size);
+  if(hugepage) {
+    buf = huge_malloc(io_size, &orig_ptr);
+  } else {
+    posix_memalign((void**)&buf, 512, io_size);
+  }
   
   for(unsigned int iter = 0; iter < count; ++iter) {
     read(fdi,  buf, io_size);
@@ -125,5 +175,9 @@ int main(int argc, char *argv[]) {
     
     write(fdo, buf, io_size);
     printf("write pos = %lu\n", lseek(fdo, 0, SEEK_CUR));
+  }
+
+  if(hugepage && orig_ptr != NULL) {
+    huge_free(orig_ptr, io_size);
   }
 }
