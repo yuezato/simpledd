@@ -11,6 +11,15 @@
 #include <errno.h>
 #include <sys/mman.h>
 #include <stdint.h>
+#include <time.h>
+#include <sys/time.h>
+
+__uint128_t current_time_as_milisec() {
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+
+  return tv.tv_sec*1000 + tv.tv_usec/1000;
+}
 
 /*
  Warning1: 汎用的な関数ではない
@@ -97,6 +106,9 @@ int main(int argc, char *argv[]) {
      },
      {
       "hugepage", optional_argument, NULL, 'h'
+     },
+     {
+      "random", optional_argument, NULL, 'r'
      }
     };
 
@@ -106,10 +118,10 @@ int main(int argc, char *argv[]) {
   unsigned int io_size = 0;
   unsigned int count = 0;
   bool hugepage = false;
+  unsigned int random_unit = 0;
+  bool random_seek = false;
   void* orig_ptr = NULL;
   while((opt = getopt_long(argc, argv, "i:o:b:c:h", longopts, &longindex)) != -1) {
-    printf("%c %d %s\n", opt, longindex, longopts[longindex].name);
-
     switch(opt) {
     case 'i':
       input_path = strdup(optarg);
@@ -126,21 +138,20 @@ int main(int argc, char *argv[]) {
     case 'h':
       hugepage = true;
       break;
+    case 'r':
+      srandom(42);
+      random_seek = true;
+      random_unit = num_as_str_to_real_num(optarg);
+      break;
     }
   }
 
-  printf("input_path = %p, output_path = %p\n", input_path, output_path);
-  
-  if(input_path) {
-    printf("input_path = %s\n", input_path);
-  } else {
+  if(!input_path) {
     puts("invalid argument on --if");
     exit(EX_USAGE);
   }
 
-  if(output_path) {
-    printf("output_path = %s\n", output_path);
-  } else {
+  if(!output_path) {
     puts("invalid argument on --of");
     exit(EX_USAGE);
   }
@@ -159,25 +170,71 @@ int main(int argc, char *argv[]) {
     exit(EX_USAGE);
   }
 
-  int fdi = open(input_path,  O_RDONLY);
-  int fdo = open(output_path, O_WRONLY|O_CREAT|O_DIRECT);
+  if(random_seek && (random_unit % io_size) == 0) {
+    printf("random_unit = %u\n", random_unit);
+  } else {
+    puts("random_unit % io_size must be 0");
+    exit(EX_USAGE);
+  }
+  
+  int fdi = open(input_path,  O_RDONLY, S_IRUSR);
+  int fdo = open(output_path, O_WRONLY|O_CREAT|O_DIRECT, S_IRUSR | S_IWUSR);
 
   char *buf;
   if(hugepage) {
     buf = huge_malloc(io_size, &orig_ptr);
   } else {
-    posix_memalign((void**)&buf, 512, io_size);
-  }
-  
-  for(unsigned int iter = 0; iter < count; ++iter) {
-    read(fdi,  buf, io_size);
-    printf("read pos = %lu\n", lseek(fdi, 0, SEEK_CUR));
-    
-    write(fdo, buf, io_size);
-    printf("write pos = %lu\n", lseek(fdo, 0, SEEK_CUR));
+    int ret = posix_memalign((void**)&buf, 512, io_size);
+    if(ret) {
+      puts("[ERROR] posix_memalign");
+      exit(errno);
+    }
   }
 
+  ssize_t ret;
+  __uint128_t stime = current_time_as_milisec();
+  for(unsigned int iter = 0; iter < count; ++iter) {
+    // printf("iter = %d\n", iter);
+    
+    ret = read(fdi,  buf, io_size);
+    if(ret != io_size) {
+      puts("[ERROR] read");
+      goto FREE;
+    }
+    // printf("read pos = %lu\n", lseek(fdi, 0, SEEK_CUR));
+    
+    ssize_t ret = write(fdo, buf, io_size);
+    if(ret != io_size) {
+      puts("[ERROR] write");
+      goto FREE;
+    }
+    // printf("write pos = %lu\n", lseek(fdo, 0, SEEK_CUR));
+
+    __uint128_t check = iter; check *= io_size; check %= random_unit;
+    if(random_seek && check == 0) {
+      __uint128_t pos = random();
+      pos %= count;
+      pos *= io_size;
+      int res = lseek(fdo, pos, SEEK_SET);
+
+      // printf("new pos = %u\n", pos);
+      if(res < 0) {
+	puts("[ERROR] seek");
+	goto FREE;
+      }
+    }
+  }
+  __uint128_t elapsed = current_time_as_milisec() - stime;
+
+  __uint128_t tmp = count;
+  tmp = tmp * io_size * 1000;
+  double throughput = tmp / elapsed;
+  printf("elapsed = %llu, throughput = %lfbyte/SEC\n", (unsigned long long)elapsed, throughput);
+  
+FREE:
   if(hugepage && orig_ptr != NULL) {
     huge_free(orig_ptr, io_size);
+  } else {
+    free(buf);
   }
 }
