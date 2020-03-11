@@ -118,7 +118,7 @@ int main(int argc, char *argv[]) {
   unsigned int io_size = 0;
   unsigned int count = 0;
   bool hugepage = false;
-  unsigned int random_unit = 0;
+  unsigned int random_unit = 1;
   bool random_seek = false;
   void* orig_ptr = NULL;
   while((opt = getopt_long(argc, argv, "i:o:b:c:h", longopts, &longindex)) != -1) {
@@ -172,13 +172,13 @@ int main(int argc, char *argv[]) {
 
   if(random_seek) {
     if ((random_unit % io_size) == 0) {
-    printf("random_unit = %u\n", random_unit);
+      printf("random_unit = %u\n", random_unit);
     } else {
       puts("random_unit % io_size must be 0");
       exit(EX_USAGE);
     }
   }
-  
+
   int fdi = open(input_path,  O_RDONLY, S_IRUSR);
   int fdo = open(output_path, O_WRONLY|O_CREAT|O_DIRECT, S_IRUSR | S_IWUSR);
 
@@ -226,6 +226,9 @@ int main(int argc, char *argv[]) {
       }
     }
   }
+
+  puts("test");
+  
   __uint128_t elapsed = current_time_as_milisec() - stime;
 
   __uint128_t tmp = count;
