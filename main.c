@@ -170,11 +170,13 @@ int main(int argc, char *argv[]) {
     exit(EX_USAGE);
   }
 
-  if(random_seek && (random_unit % io_size) == 0) {
+  if(random_seek) {
+    if ((random_unit % io_size) == 0) {
     printf("random_unit = %u\n", random_unit);
-  } else {
-    puts("random_unit % io_size must be 0");
-    exit(EX_USAGE);
+    } else {
+      puts("random_unit % io_size must be 0");
+      exit(EX_USAGE);
+    }
   }
   
   int fdi = open(input_path,  O_RDONLY, S_IRUSR);
