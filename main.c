@@ -67,12 +67,11 @@ unsigned long num_as_str_to_real_num(const char *str) {
     return ret; // TODO: エラー処理
   }
   
-  char target[len-1];
-  strncpy(target, str, len-1);
+  char *target = strndupa(str, len-1);
   unsigned long v = strtoul(target, &err, 10);
   unsigned int coeff = 1;
   
-  switch(str[len - 1]) {
+  switch(lastc) {
   case 'K':
     coeff = 1024;
     break;
@@ -84,6 +83,24 @@ unsigned long num_as_str_to_real_num(const char *str) {
   }
 
   return v * coeff;
+}
+
+/*
+  fun("123456", ..., 2, '_') -> 12_34_56
+  fun("123456", ..., 4, '_') -> 12_3456
+ */
+void to_readable(const char *src, char *dst, int s, int c) {
+  size_t len = strlen(src);
+  size_t dst_last = len + ((len-1)/s);
+  dst[dst_last] = '\0';
+  for(int count = 0, i = len-1, j = dst_last-1; i >= 0; ++count, --i) {
+    if(count > 0 && count % s == 0) {
+      dst[j] = c;
+      --j;
+    }
+    dst[j] = src[i];
+    --j;
+  }
 }
 
 /*
@@ -195,20 +212,30 @@ int main(int argc, char *argv[]) {
 
   ssize_t ret;
   __uint128_t stime = current_time_as_milisec();
+  __uint128_t read_total = 0;
+  __uint128_t write_total = 0;
   for(unsigned int iter = 0; iter < count; ++iter) {
     // printf("iter = %d\n", iter);
-    
-    ret = read(fdi,  buf, io_size);
-    if(ret != io_size) {
-      puts("[ERROR] read");
-      goto FREE;
+
+    {
+      __uint128_t s = current_time_as_milisec();
+      ret = read(fdi,  buf, io_size);
+      if(ret != io_size) {
+	puts("[ERROR] read");
+	goto FREE;
+      }
+      read_total += (current_time_as_milisec() - s);
     }
     // printf("read pos = %lu\n", lseek(fdi, 0, SEEK_CUR));
-    
-    ssize_t ret = write(fdo, buf, io_size);
-    if(ret != io_size) {
-      puts("[ERROR] write");
-      goto FREE;
+
+    {
+      __uint128_t s = current_time_as_milisec();
+      ssize_t ret = write(fdo, buf, io_size);
+      if(ret != io_size) {
+	puts("[ERROR] write");
+	goto FREE;
+      }
+      write_total += (current_time_as_milisec() - s);
     }
     // printf("write pos = %lu\n", lseek(fdo, 0, SEEK_CUR));
 
@@ -233,8 +260,21 @@ int main(int argc, char *argv[]) {
 
   __uint128_t tmp = count;
   tmp = tmp * io_size * 1000;
-  double throughput = tmp / elapsed;
-  printf("elapsed = %llu, throughput = %lfbyte/SEC\n", (unsigned long long)elapsed, throughput);
+  unsigned long long throughput = tmp / elapsed;
+
+  long double et = elapsed; et /= 1000;
+  long double rt = read_total; rt /= 1000;
+  long double wt = write_total; wt /= 1000;
+
+  char* buf1 = malloc(8192);
+  char* buf2 = malloc(8192);
+  sprintf(buf1, "%llu", throughput);
+  to_readable(buf1, buf2, 3, ',');
+  
+  printf("elapsed = %Lf(sec), throughput = %s byte/sec\n", et, buf2);
+  printf("read secs = %Lf(sec), write secs = %Lf(sec)\n", rt, wt);
+
+  free(buf1); free(buf2);
   
 FREE:
   if(hugepage && orig_ptr != NULL) {
